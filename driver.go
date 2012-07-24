@@ -57,18 +57,23 @@ type libpqDriver struct {
 var pqdriver *libpqDriver
 
 type libpqConn struct {
-	db      *C.PGconn
-	stmtNum int
+	db        *C.PGconn
+	stmtCache map[string]*libpqCachedPreparation
+	stmtNum   int
 }
 
 type libpqTx struct {
 	c *libpqConn
 }
 
+type libpqCachedPreparation struct {
+	nparams int
+	name    *C.char
+}
+
 type libpqStmt struct {
 	c       *libpqConn
 	name    *C.char
-	prep    *C.PGresult
 	nparams int
 }
 
@@ -121,7 +126,11 @@ func (d *libpqDriver) Open(dsn string) (driver.Conn, error) {
 		return nil, connError(db)
 	}
 
-	return &libpqConn{db, 0}, nil
+	return &libpqConn{
+		db,
+		make(map[string]*libpqCachedPreparation),
+		0,
+	}, nil
 }
 
 func (c *libpqConn) Begin() (driver.Tx, error) {
@@ -149,6 +158,10 @@ func (c *libpqConn) exec(cmd string) error {
 
 func (c *libpqConn) Close() error {
 	C.PQfinish(c.db)
+	// free cached statement names
+	for _, v := range c.stmtCache {
+		C.free(unsafe.Pointer(v.name))
+	}
 	return nil
 }
 
@@ -168,6 +181,12 @@ func (c *libpqConn) preparedStmtNumInput(cname *C.char) (int, error) {
 }
 
 func (c *libpqConn) Prepare(query string) (driver.Stmt, error) {
+	// check our connection's query cache to see if we've already prepared this
+	cached, ok := c.stmtCache[query]
+	if ok {
+		return &libpqStmt{c: c, name: cached.name, nparams: cached.nparams}, nil
+	}
+
 	// create unique statement name
 	cname := c.uniqueStmtName()
 	cquery := C.CString(query)
@@ -175,6 +194,7 @@ func (c *libpqConn) Prepare(query string) (driver.Stmt, error) {
 
 	// initial query preparation
 	cres := C.PQprepare(c.db, cname, cquery, 0, nil)
+	defer C.PQclear(cres)
 	if err := resultError(cres); err != nil {
 		C.PQclear(cres)
 		return nil, err
@@ -186,12 +206,15 @@ func (c *libpqConn) Prepare(query string) (driver.Stmt, error) {
 		return nil, err
 	}
 
-	return &libpqStmt{c: c, name: cname, prep: cres, nparams: nparams}, nil
+	// save in cache
+	c.stmtCache[query] = &libpqCachedPreparation{nparams, cname}
+
+	return &libpqStmt{c: c, name: cname, nparams: nparams}, nil
 }
 
 func (s *libpqStmt) Close() error {
-	C.free(unsafe.Pointer(s.name))
-	C.PQclear(s.prep)
+	// nothing to do - prepared statement names are cached and will be
+	// freed when s's parent libpqConn is closed
 	return nil
 }
 
