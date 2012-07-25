@@ -129,18 +129,18 @@ func (d *libpqDriver) Open(dsn string) (driver.Conn, error) {
 }
 
 func (c *libpqConn) Begin() (driver.Tx, error) {
-	if err := c.exec("BEGIN"); err != nil {
+	if err := c.exec("BEGIN", nil); err != nil {
 		return nil, err
 	}
 	return &libpqTx{c}, nil
 }
 
 func (tx *libpqTx) Commit() error {
-	return tx.c.exec("COMMIT")
+	return tx.c.exec("COMMIT", nil)
 }
 
 func (tx *libpqTx) Rollback() error {
-	return tx.c.exec("ROLLBACK")
+	return tx.c.exec("ROLLBACK", nil)
 }
 
 func getNumRows(cres *C.PGresult) (int64, error) {
@@ -151,12 +151,28 @@ func getNumRows(cres *C.PGresult) (int64, error) {
 
 	return strconv.ParseInt(rowstr, 10, 64)
 }
-func (c *libpqConn) exec(cmd string) error {
+
+func (c *libpqConn) exec(cmd string, res *libpqResult) error {
 	ccmd := C.CString(cmd)
 	defer C.free(unsafe.Pointer(ccmd))
-	res := C.PQexec(c.db, ccmd)
-	defer C.PQclear(res)
-	return resultError(res)
+	cres := C.PQexec(c.db, ccmd)
+	defer C.PQclear(cres)
+	if err := resultError(cres); err != nil {
+		return err
+	}
+
+	// check to see if caller cares about number of rows modified
+	if res == nil {
+		return nil
+	}
+
+	nrows, err := getNumRows(cres)
+	if err != nil {
+		return err
+	}
+
+	res.nrows = nrows
+	return nil
 }
 
 func (c *libpqConn) Close() error {
@@ -183,6 +199,18 @@ func (c *libpqConn) preparedStmtNumInput(cname *C.char) (int, error) {
 		return 0, err
 	}
 	return int(C.PQnparams(cinfo)), nil
+}
+
+func (c *libpqConn) Exec(query string, args []driver.Value) (driver.Result, error) {
+	if len(args) != 0 {
+		return nil, driver.ErrSkip
+	}
+
+	var res libpqResult
+	if err := c.exec(query, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
 }
 
 func (c *libpqConn) Prepare(query string) (driver.Stmt, error) {
