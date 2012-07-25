@@ -28,50 +28,9 @@ var (
 type libpqDriver struct {
 }
 
-type libpqConn struct {
-	db        *C.PGconn
-	stmtCache map[string]driver.Stmt
-	stmtNum   int
-}
-
-type libpqTx struct {
-	c *libpqConn
-}
-
-type libpqStmt struct {
-	c       *libpqConn
-	name    *C.char
-	nparams int
-}
-
-type libpqResult struct {
-	nrows int64 // number of rows affected
-}
-
-type libpqRows struct {
-	s       *libpqStmt
-	res     *C.PGresult
-	ncols   int
-	nrows   int
-	currRow int
-	cols    []string
-}
-
 func init() {
 	go handleArgpool()
 	sql.Register("libpq", &libpqDriver{})
-}
-
-func connError(db *C.PGconn) error {
-	return errors.New("libpq: connection error: " + C.GoString(C.PQerrorMessage(db)))
-}
-
-func resultError(res *C.PGresult) error {
-	status := C.PQresultStatus(res)
-	if status == C.PGRES_COMMAND_OK || status == C.PGRES_TUPLES_OK {
-		return nil
-	}
-	return errors.New("libpq: result error: " + C.GoString(C.PQresultErrorMessage(res)))
 }
 
 func (d *libpqDriver) Open(dsn string) (driver.Conn, error) {
@@ -85,7 +44,7 @@ func (d *libpqDriver) Open(dsn string) (driver.Conn, error) {
 	db := C.PQconnectdb(params)
 	if C.PQstatus(db) != C.CONNECTION_OK {
 		defer C.PQfinish(db)
-		return nil, connError(db)
+		return nil, errors.New("libpq: connection error " + C.GoString(C.PQerrorMessage(db)))
 	}
 
 	return &libpqConn{
@@ -95,11 +54,21 @@ func (d *libpqDriver) Open(dsn string) (driver.Conn, error) {
 	}, nil
 }
 
+type libpqConn struct {
+	db        *C.PGconn
+	stmtCache map[string]driver.Stmt
+	stmtNum   int
+}
+
 func (c *libpqConn) Begin() (driver.Tx, error) {
 	if err := c.exec("BEGIN", nil); err != nil {
 		return nil, err
 	}
 	return &libpqTx{c}, nil
+}
+
+type libpqTx struct {
+	c *libpqConn
 }
 
 func (tx *libpqTx) Commit() error {
@@ -110,13 +79,15 @@ func (tx *libpqTx) Rollback() error {
 	return tx.c.exec("ROLLBACK", nil)
 }
 
-func getNumRows(cres *C.PGresult) (int64, error) {
-	rowstr := C.GoString(C.PQcmdTuples(cres))
-	if rowstr == "" {
-		return 0, nil
+func (c *libpqConn) Close() error {
+	C.PQfinish(c.db)
+	// free cached prepared statement names
+	for _, v := range c.stmtCache {
+		if stmt, ok := v.(*libpqStmt); ok {
+			C.free(unsafe.Pointer(stmt.name))
+		}
 	}
-
-	return strconv.ParseInt(rowstr, 10, 64)
+	return nil
 }
 
 func (c *libpqConn) exec(cmd string, res *libpqResult) error {
@@ -138,7 +109,7 @@ func (c *libpqConn) exec(cmd string, res *libpqResult) error {
 		return err
 	}
 
-	res.nrows = nrows
+	*res = libpqResult(nrows)
 	return nil
 }
 
@@ -166,33 +137,7 @@ func (c *libpqConn) execParams(cmd string, args []driver.Value) (driver.Result, 
 		return nil, err
 	}
 
-	return &libpqResult{nrows}, nil
-}
-
-func (c *libpqConn) Close() error {
-	C.PQfinish(c.db)
-	// free cached statement names
-	for _, v := range c.stmtCache {
-		if stmt, ok := v.(*libpqStmt); ok {
-			C.free(unsafe.Pointer(stmt.name))
-		}
-	}
-	return nil
-}
-
-func (c *libpqConn) uniqueStmtName() *C.char {
-	name := strconv.Itoa(c.stmtNum)
-	c.stmtNum++
-	return C.CString(name)
-}
-
-func (c *libpqConn) preparedStmtNumInput(cname *C.char) (int, error) {
-	cinfo := C.PQdescribePrepared(c.db, cname)
-	defer C.PQclear(cinfo)
-	if err := resultError(cinfo); err != nil {
-		return 0, err
-	}
-	return int(C.PQnparams(cinfo)), nil
+	return libpqResult(nrows), nil
 }
 
 func (c *libpqConn) Exec(query string, args []driver.Value) (driver.Result, error) {
@@ -220,7 +165,9 @@ func (c *libpqConn) Prepare(query string) (driver.Stmt, error) {
 	}
 
 	// create unique statement name
-	cname := c.uniqueStmtName()
+	// NOTE: do NOT free cname here because it is cached; free it in c.Close()
+	cname := C.CString(strconv.Itoa(c.stmtNum))
+	c.stmtNum++
 	cquery := C.CString(query)
 	defer C.free(unsafe.Pointer(cquery))
 
@@ -232,11 +179,13 @@ func (c *libpqConn) Prepare(query string) (driver.Stmt, error) {
 		return nil, err
 	}
 
-	nparams, err := c.preparedStmtNumInput(cname)
-	if err != nil {
-		C.PQclear(cres)
+	// get number of parameters in this query
+	cinfo := C.PQdescribePrepared(c.db, cname)
+	defer C.PQclear(cinfo)
+	if err := resultError(cinfo); err != nil {
 		return nil, err
 	}
+	nparams := int(C.PQnparams(cinfo))
 
 	// save in cache
 	c.stmtCache[query] = &libpqStmt{c: c, name: cname, nparams: nparams}
@@ -244,9 +193,15 @@ func (c *libpqConn) Prepare(query string) (driver.Stmt, error) {
 	return c.stmtCache[query], nil
 }
 
+type libpqStmt struct {
+	c       *libpqConn
+	name    *C.char
+	nparams int
+}
+
 func (s *libpqStmt) Close() error {
 	// nothing to do - prepared statement names are cached and will be
-	// freed when s's parent libpqConn is closed
+	// freed in s.c.Close()
 	return nil
 }
 
@@ -284,7 +239,7 @@ func (s *libpqStmt) Exec(args []driver.Value) (driver.Result, error) {
 		return nil, err
 	}
 
-	return &libpqResult{nrows}, nil
+	return libpqResult(nrows), nil
 }
 
 func (s *libpqStmt) Query(args []driver.Value) (driver.Rows, error) {
@@ -301,6 +256,32 @@ func (s *libpqStmt) Query(args []driver.Value) (driver.Rows, error) {
 		currRow: 0,
 		cols:    nil,
 	}, nil
+}
+
+type libpqRows struct {
+	s       *libpqStmt
+	res     *C.PGresult
+	ncols   int
+	nrows   int
+	currRow int
+	cols    []string
+}
+
+func resultError(res *C.PGresult) error {
+	status := C.PQresultStatus(res)
+	if status == C.PGRES_COMMAND_OK || status == C.PGRES_TUPLES_OK {
+		return nil
+	}
+	return errors.New("libpq: result error: " + C.GoString(C.PQresultErrorMessage(res)))
+}
+
+func getNumRows(cres *C.PGresult) (int64, error) {
+	rowstr := C.GoString(C.PQcmdTuples(cres))
+	if rowstr == "" {
+		return 0, nil
+	}
+
+	return strconv.ParseInt(rowstr, 10, 64)
 }
 
 func (r *libpqRows) Close() error {
@@ -365,10 +346,12 @@ func (r *libpqRows) Next(dest []driver.Value) error {
 	return nil
 }
 
-func (r *libpqResult) RowsAffected() (int64, error) {
-	return r.nrows, nil
+type libpqResult int64
+
+func (r libpqResult) RowsAffected() (int64, error) {
+	return int64(r), nil
 }
 
-func (r *libpqResult) LastInsertId() (int64, error) {
+func (r libpqResult) LastInsertId() (int64, error) {
 	return 0, ErrLastInsertId
 }
