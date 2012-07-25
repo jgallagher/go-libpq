@@ -143,6 +143,14 @@ func (tx *libpqTx) Rollback() error {
 	return tx.c.exec("ROLLBACK")
 }
 
+func getNumRows(cres *C.PGresult) (int64, error) {
+	rowstr := C.GoString(C.PQcmdTuples(cres))
+	if rowstr == "" {
+		return 0, nil
+	}
+
+	return strconv.ParseInt(rowstr, 10, 64)
+}
 func (c *libpqConn) exec(cmd string) error {
 	ccmd := C.CString(cmd)
 	defer C.free(unsafe.Pointer(ccmd))
@@ -244,13 +252,7 @@ func (s *libpqStmt) Exec(args []driver.Value) (driver.Result, error) {
 	}
 	defer C.PQclear(cres)
 
-	// get number of rows affected
-	rowstr := C.GoString(C.PQcmdTuples(cres))
-	if rowstr == "" {
-		return &libpqResult{0}, nil
-	}
-
-	nrows, err := strconv.ParseInt(rowstr, 10, 64)
+	nrows, err := getNumRows(cres)
 	if err != nil {
 		return nil, err
 	}
