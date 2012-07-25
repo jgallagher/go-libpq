@@ -175,6 +175,33 @@ func (c *libpqConn) exec(cmd string, res *libpqResult) error {
 	return nil
 }
 
+func (c *libpqConn) execParams(cmd string, args []driver.Value) (driver.Result, error) {
+	// convert args into C array-of-strings
+	cargs, err := buildCArgs(args)
+	if err != nil {
+		return nil, err
+	}
+	defer pqdriver.returnCharArrayToPool(len(args), cargs)
+
+	ccmd := C.CString(cmd)
+	defer C.free(unsafe.Pointer(ccmd))
+
+	// execute
+	cres := C.PQexecParams(c.db, ccmd, C.int(len(args)), nil, cargs, nil, nil, 0)
+	defer C.PQclear(cres)
+	if err = resultError(cres); err != nil {
+		return nil, err
+	}
+
+	// get modified rows
+	nrows, err := getNumRows(cres)
+	if err != nil {
+		return nil, err
+	}
+
+	return &libpqResult{nrows}, nil
+}
+
 func (c *libpqConn) Close() error {
 	C.PQfinish(c.db)
 	// free cached statement names
@@ -203,7 +230,7 @@ func (c *libpqConn) preparedStmtNumInput(cname *C.char) (int, error) {
 
 func (c *libpqConn) Exec(query string, args []driver.Value) (driver.Result, error) {
 	if len(args) != 0 {
-		return nil, driver.ErrSkip
+		return c.execParams(query, args)
 	}
 
 	var res libpqResult
@@ -257,7 +284,7 @@ func (s *libpqStmt) NumInput() int {
 
 func (s *libpqStmt) exec(args []driver.Value) (*C.PGresult, error) {
 	// convert args into C array-of-strings
-	cargs, err := s.buildCArgs(args)
+	cargs, err := buildCArgs(args)
 	if err != nil {
 		return nil, err
 	}
@@ -366,7 +393,7 @@ func (r *libpqRows) Next(dest []driver.Value) error {
 	return nil
 }
 
-func (s *libpqStmt) buildCArgs(args []driver.Value) (**C.char, error) {
+func buildCArgs(args []driver.Value) (**C.char, error) {
 	carray := pqdriver.getCharArrayFromPool(len(args))
 
 	for i, v := range args {
