@@ -58,17 +58,12 @@ var pqdriver *libpqDriver
 
 type libpqConn struct {
 	db        *C.PGconn
-	stmtCache map[string]*libpqCachedPreparation
+	stmtCache map[string]driver.Stmt
 	stmtNum   int
 }
 
 type libpqTx struct {
 	c *libpqConn
-}
-
-type libpqCachedPreparation struct {
-	nparams int
-	name    *C.char
 }
 
 type libpqStmt struct {
@@ -128,7 +123,7 @@ func (d *libpqDriver) Open(dsn string) (driver.Conn, error) {
 
 	return &libpqConn{
 		db,
-		make(map[string]*libpqCachedPreparation),
+		make(map[string]driver.Stmt),
 		0,
 	}, nil
 }
@@ -160,7 +155,9 @@ func (c *libpqConn) Close() error {
 	C.PQfinish(c.db)
 	// free cached statement names
 	for _, v := range c.stmtCache {
-		C.free(unsafe.Pointer(v.name))
+		if stmt, ok := v.(*libpqStmt); ok {
+			C.free(unsafe.Pointer(stmt.name))
+		}
 	}
 	return nil
 }
@@ -184,7 +181,7 @@ func (c *libpqConn) Prepare(query string) (driver.Stmt, error) {
 	// check our connection's query cache to see if we've already prepared this
 	cached, ok := c.stmtCache[query]
 	if ok {
-		return &libpqStmt{c: c, name: cached.name, nparams: cached.nparams}, nil
+		return cached, nil
 	}
 
 	// create unique statement name
@@ -207,9 +204,9 @@ func (c *libpqConn) Prepare(query string) (driver.Stmt, error) {
 	}
 
 	// save in cache
-	c.stmtCache[query] = &libpqCachedPreparation{nparams, cname}
+	c.stmtCache[query] = &libpqStmt{c: c, name: cname, nparams: nparams}
 
-	return &libpqStmt{c: c, name: cname, nparams: nparams}, nil
+	return c.stmtCache[query], nil
 }
 
 func (s *libpqStmt) Close() error {
