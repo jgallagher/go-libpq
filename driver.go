@@ -1,26 +1,9 @@
 package libpq
 
 /*
-#include <stdlib.h>
 #include <c.h>
 #include <catalog/pg_type.h>
 #include <libpq-fe.h>
-
-static char **makeCharArray(int size) {
-	return calloc(sizeof(char *), size);
-}
-
-static void setArrayString(char **a, char *s, int n) {
-	a[n] = s;
-}
-
-static void freeArrayElements(int n, char **a) {
-	int i;
-	for (i = 0; i < n; i++) {
-		free(a[i]);
-		a[i] = NULL;
-	}
-}
 */
 import "C"
 import (
@@ -32,7 +15,6 @@ import (
 	"io"
 	"strconv"
 	"strings"
-	"time"
 	"unsafe"
 )
 
@@ -43,23 +25,8 @@ var (
 	ErrThreadSafety = errors.New("libpq: Not compiled for thread-safe operation")
 )
 
-type poolRequest struct {
-	nargs int
-	resp  chan (**C.char)
-}
-
-type poolReturn struct {
-	nargs int
-	array **C.char
-}
-
 type libpqDriver struct {
-	argpool     map[int][]**C.char
-	poolRequest chan poolRequest
-	poolReturn  chan poolReturn
 }
-
-var pqdriver *libpqDriver
 
 type libpqConn struct {
 	db        *C.PGconn
@@ -91,13 +58,8 @@ type libpqRows struct {
 }
 
 func init() {
-	pqdriver = &libpqDriver{
-		argpool:     make(map[int][]**C.char),
-		poolRequest: make(chan poolRequest),
-		poolReturn:  make(chan poolReturn),
-	}
-	go pqdriver.handleArgpool()
-	sql.Register("libpq", pqdriver)
+	go handleArgpool()
+	sql.Register("libpq", &libpqDriver{})
 }
 
 func connError(db *C.PGconn) error {
@@ -186,7 +148,7 @@ func (c *libpqConn) execParams(cmd string, args []driver.Value) (driver.Result, 
 	if err != nil {
 		return nil, err
 	}
-	defer pqdriver.returnCharArrayToPool(len(args), cargs)
+	defer returnCharArrayToPool(len(args), cargs)
 
 	ccmd := C.CString(cmd)
 	defer C.free(unsafe.Pointer(ccmd))
@@ -298,7 +260,7 @@ func (s *libpqStmt) exec(args []driver.Value) (*C.PGresult, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer pqdriver.returnCharArrayToPool(len(args), cargs)
+	defer returnCharArrayToPool(len(args), cargs)
 
 	// execute
 	cres := C.PQexecPrepared(s.c.db, s.name, C.int(len(args)), cargs, nil, nil, 0)
@@ -403,75 +365,10 @@ func (r *libpqRows) Next(dest []driver.Value) error {
 	return nil
 }
 
-func buildCArgs(args []driver.Value) (**C.char, error) {
-	carray := pqdriver.getCharArrayFromPool(len(args))
-
-	for i, v := range args {
-		var str string
-		switch v := v.(type) {
-		case int64:
-			str = strconv.FormatInt(v, 10)
-		case float64:
-			str = strconv.FormatFloat(v, 'E', -1, 64)
-		case bool:
-			if v {
-				str = "t"
-			} else {
-				str = "f"
-			}
-		case []byte:
-			str = `\x` + hex.EncodeToString(v)
-		case string:
-			str = v
-		case time.Time:
-			str = v.Format(timeFormat)
-		case nil:
-			str = "NULL"
-		default:
-			pqdriver.returnCharArrayToPool(len(args), carray)
-			return nil, errors.New("libpq: unsupported type")
-		}
-
-		C.setArrayString(carray, C.CString(str), C.int(i))
-	}
-
-	return carray, nil
-}
-
 func (r *libpqResult) RowsAffected() (int64, error) {
 	return r.nrows, nil
 }
 
 func (r *libpqResult) LastInsertId() (int64, error) {
 	return 0, ErrLastInsertId
-}
-
-func (d *libpqDriver) getCharArrayFromPool(nargs int) **C.char {
-	ch := make(chan **C.char)
-	req := poolRequest{nargs, ch}
-	d.poolRequest <- req
-	return <-ch
-}
-
-func (d *libpqDriver) returnCharArrayToPool(nargs int, array **C.char) {
-	C.freeArrayElements(C.int(nargs), array)
-	d.poolReturn <- poolReturn{nargs, array}
-}
-
-func (d *libpqDriver) handleArgpool() {
-	for {
-		select {
-		case req := <-d.poolReturn:
-			list := append(d.argpool[req.nargs], req.array)
-			d.argpool[req.nargs] = list
-
-		case req := <-d.poolRequest:
-			list := d.argpool[req.nargs]
-			if len(list) == 0 {
-				list = append(list, C.makeCharArray(C.int(req.nargs)))
-			}
-			req.resp <- list[0]
-			d.argpool[req.nargs] = list[1:]
-		}
-	}
 }
