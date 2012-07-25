@@ -1,10 +1,11 @@
 package libpq
 
 /*
+#include <stdlib.h>
+#include <sys/select.h>
 #include <c.h>
 #include <catalog/pg_type.h>
 #include <libpq-fe.h>
-#include <stdlib.h>
 
 static char **makeCharArray(int size) {
 	return calloc(sizeof(char *), size);
@@ -19,6 +20,33 @@ static void freeArrayElements(int n, char **a) {
 	for (i = 0; i < n; i++) {
 		free(a[i]);
 		a[i] = NULL;
+	}
+}
+
+static PGnotify *waitForNotify(PGconn *conn) {
+	int sock;
+	fd_set input_mask;
+	PGnotify *note;
+
+	sock = PQsocket(conn);
+	if (sock < 0) {
+		return NULL;
+	}
+
+	while (1) {
+		FD_ZERO(&input_mask);
+		FD_SET(sock, &input_mask);
+
+		// block waiting for input
+		if (select(sock+1, &input_mask, NULL, NULL, NULL) < 0) {
+			return NULL;
+		}
+
+		// check for notifications
+		PQconsumeInput(conn);
+		if ((note = PQnotifies(conn)) != NULL) {
+			return note;
+		}
 	}
 }
 */
@@ -37,6 +65,11 @@ import (
 )
 
 const timeFormat = "2006-01-02 15:04:05.000000-07"
+
+var (
+	ErrListenStmtNoExec       = errors.New("Exec() not supported for libpq LISTEN statements")
+	ErrWaitingForNotification = errors.New("Fatal error waiting for NOTIFY")
+)
 
 type poolRequest struct {
 	nargs int
@@ -72,6 +105,11 @@ type libpqStmt struct {
 	nparams int
 }
 
+type libpqListenStmt struct {
+	c     *libpqConn
+	query string
+}
+
 type libpqResult struct {
 	nrows int64 // number of rows affected
 }
@@ -83,6 +121,11 @@ type libpqRows struct {
 	nrows   int
 	currRow int
 	cols    []string
+}
+
+type libpqNotificationRows struct {
+	payload  string
+	reported bool
 }
 
 func init() {
@@ -228,6 +271,14 @@ func (c *libpqConn) preparedStmtNumInput(cname *C.char) (int, error) {
 	return int(C.PQnparams(cinfo)), nil
 }
 
+func (c *libpqConn) prepareListen(query string) (driver.Stmt, error) {
+	if err := c.exec(query, nil); err != nil {
+		return nil, err
+	}
+
+	return &libpqListenStmt{c, query}, nil
+}
+
 func (c *libpqConn) Exec(query string, args []driver.Value) (driver.Result, error) {
 	if len(args) != 0 {
 		return c.execParams(query, args)
@@ -245,6 +296,11 @@ func (c *libpqConn) Prepare(query string) (driver.Stmt, error) {
 	cached, ok := c.stmtCache[query]
 	if ok {
 		return cached, nil
+	}
+
+	// check to see if this is a LISTEN
+	if strings.HasPrefix(strings.ToLower(query), "listen") {
+		return c.prepareListen(query)
 	}
 
 	// create unique statement name
@@ -434,6 +490,53 @@ func (r *libpqResult) RowsAffected() (int64, error) {
 
 func (r *libpqResult) LastInsertId() (int64, error) {
 	return 0, errors.New("libpq: LastInsertId() not supported")
+}
+
+func (s *libpqListenStmt) Close() error {
+	// issue unlisten - assumes s.query starts with "listen", which is true
+	// given the check in libpqConn.Prepare()
+	return s.c.exec("un" + s.query, nil)
+}
+
+func (s *libpqListenStmt) Exec(args []driver.Value) (driver.Result, error) {
+	return nil, ErrListenStmtNoExec
+}
+
+func (s *libpqListenStmt) Query(args []driver.Value) (driver.Rows, error) {
+	// first check to see if we have any pending notifications already
+	note := C.PQnotifies(s.c.db)
+	if note == nil {
+		// none pending - block waiting for one
+		note = C.waitForNotify(s.c.db)
+		if note == nil {
+			return nil, ErrWaitingForNotification
+		}
+	}
+	defer C.PQfreemem(unsafe.Pointer(note))
+	return &libpqNotificationRows{C.GoString(note.extra), false}, nil
+}
+
+func (s *libpqListenStmt) NumInput() int {
+	return 0
+}
+
+func (r *libpqNotificationRows) Close() error {
+	return nil
+}
+
+func (r *libpqNotificationRows) Columns() []string {
+	return []string{"NOTIFY payload"}
+}
+
+func (r *libpqNotificationRows) Next(dest []driver.Value) error {
+	if r.reported {
+		return io.EOF
+	}
+	r.reported = true
+	if len(dest) > 0 {
+		dest[0] = r.payload
+	}
+	return nil
 }
 
 func (d *libpqDriver) getCharArrayFromPool(nargs int) **C.char {
