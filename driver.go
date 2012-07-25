@@ -67,8 +67,10 @@ import (
 const timeFormat = "2006-01-02 15:04:05.000000-07"
 
 var (
-	ErrListenStmtNoExec       = errors.New("Exec() not supported for libpq LISTEN statements")
-	ErrWaitingForNotification = errors.New("Fatal error waiting for NOTIFY")
+	ErrListenStmtNoExec       = errors.New("libpq: Exec() not supported for LISTEN statements")
+	ErrWaitingForNotification = errors.New("libpq: Fatal error waiting for NOTIFY")
+	ErrLastInsertId           = errors.New("libpq: LastInsertId() not supported")
+	ErrThreadSafety           = errors.New("libpq: Not compiled for thread-safe operation")
 )
 
 type poolRequest struct {
@@ -139,7 +141,7 @@ func init() {
 }
 
 func connError(db *C.PGconn) error {
-	return errors.New("libpq connection error: " + C.GoString(C.PQerrorMessage(db)))
+	return errors.New("libpq: connection error: " + C.GoString(C.PQerrorMessage(db)))
 }
 
 func resultError(res *C.PGresult) error {
@@ -147,12 +149,12 @@ func resultError(res *C.PGresult) error {
 	if status == C.PGRES_COMMAND_OK || status == C.PGRES_TUPLES_OK {
 		return nil
 	}
-	return errors.New("libpq result error: " + C.GoString(C.PQresultErrorMessage(res)))
+	return errors.New("libpq: result error: " + C.GoString(C.PQresultErrorMessage(res)))
 }
 
 func (d *libpqDriver) Open(dsn string) (driver.Conn, error) {
 	if C.PQisthreadsafe() != 1 {
-		return nil, errors.New("libpq was not compiled for thread-safe operation")
+		return nil, ErrThreadSafety
 	}
 
 	params := C.CString(dsn)
@@ -475,7 +477,7 @@ func buildCArgs(args []driver.Value) (**C.char, error) {
 			str = "NULL"
 		default:
 			pqdriver.returnCharArrayToPool(len(args), carray)
-			return nil, errors.New("unsupported type")
+			return nil, errors.New("libpq: unsupported type")
 		}
 
 		C.setArrayString(carray, C.CString(str), C.int(i))
@@ -489,13 +491,13 @@ func (r *libpqResult) RowsAffected() (int64, error) {
 }
 
 func (r *libpqResult) LastInsertId() (int64, error) {
-	return 0, errors.New("libpq: LastInsertId() not supported")
+	return 0, ErrLastInsertId
 }
 
 func (s *libpqListenStmt) Close() error {
 	// issue unlisten - assumes s.query starts with "listen", which is true
 	// given the check in libpqConn.Prepare()
-	return s.c.exec("un" + s.query, nil)
+	return s.c.exec("un"+s.query, nil)
 }
 
 func (s *libpqListenStmt) Exec(args []driver.Value) (driver.Result, error) {
