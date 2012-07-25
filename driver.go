@@ -1,7 +1,7 @@
 package libpq
 
 /*
-#include <c.h>
+#include <postgres_fe.h>
 #include <catalog/pg_type.h>
 #include <libpq-fe.h>
 */
