@@ -28,6 +28,8 @@ import (
 	"time"
 )
 
+const timeFormat = "2006-01-02 15:04:05-07"
+
 // wrapper for a request for a char** of length nargs
 type pqPoolRequest struct {
 	nargs int

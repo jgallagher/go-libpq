@@ -1,22 +1,11 @@
-package libpq
+package libpq_test
 
 import (
-	"database/sql"
-	"fmt"
-	"os"
 	"testing"
 )
 
 func TestListen(t *testing.T) {
-	user := os.Getenv("GOSQLTEST_PQ_USER")
-	if user == "" {
-		user = os.Getenv("USER")
-	}
-	dbName := "gosqltest"
-	db, err := sql.Open("libpq", fmt.Sprintf("user=%s password=foo dbname=%s sslmode=disable", user, dbName))
-	if err != nil {
-		t.Fatalf("Failed to open database: ", err)
-	}
+	db, err := getConn(t)
 
 	// start listening
 	stmt, err := db.Prepare("LISTEN channel")

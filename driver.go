@@ -1,8 +1,7 @@
 package libpq
 
 /*
-#include <postgres_fe.h>
-#include <catalog/pg_type.h>
+#include <stdlib.h>
 #include <libpq-fe.h>
 */
 import "C"
@@ -15,10 +14,10 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 	"unsafe"
 )
-
-const timeFormat = "2006-01-02 15:04:05.000000-07"
 
 var (
 	// Error returned by any call to LastInsertId().
@@ -26,13 +25,26 @@ var (
 
 	// Error returned by Open() if libpq is not thread-safe.
 	ErrThreadSafety = errors.New("libpq: Not compiled for thread-safe operation")
+
+	// Error returned by Open() if we could not determine Postgres OIDs.
+	ErrFetchingOids = errors.New("libpq: Could not fetch base datatype OIDs")
 )
 
-type libpqDriver struct{}
+type pqoid struct {
+	Bytea       int
+	Date        int
+	Timestamp   int
+	TimestampTz int
+}
+
+type libpqDriver struct {
+	sync.Mutex
+	oids map[string]*pqoid
+}
 
 func init() {
 	go handleArgpool()
-	sql.Register("libpq", &libpqDriver{})
+	sql.Register("libpq", &libpqDriver{oids: make(map[string]*pqoid)})
 }
 
 // dsn is passed directly to PQconnectdb
@@ -50,11 +62,67 @@ func (d *libpqDriver) Open(dsn string) (driver.Conn, error) {
 		return nil, errors.New("libpq: connection error " + C.GoString(C.PQerrorMessage(db)))
 	}
 
-	return &libpqConn{db, make(map[string]driver.Stmt), 0}, nil
+	oids, err := d.getOids(db, dsn)
+	if err != nil {
+		defer C.PQfinish(db)
+		return nil, ErrFetchingOids
+	}
+
+	return &libpqConn{
+		db:        db,
+		oids:      oids,
+		stmtCache: make(map[string]driver.Stmt),
+		stmtNum:   0,
+	}, nil
+}
+
+func (d *libpqDriver) getOids(db *C.PGconn, dsn string) (*pqoid, error) {
+	var err error
+	d.Lock()
+	defer d.Unlock()
+
+	// check cache
+	if oids, ok := d.oids[dsn]; ok {
+		return oids, nil
+	}
+
+	// not in cache - query the database
+	oids := &pqoid{}
+	names := []struct {
+		kind string
+		dest *int
+	}{
+		{"'bytea'", &oids.Bytea},
+		{"'date'", &oids.Date},
+		{"'timestamp'", &oids.Timestamp},
+		{"'timestamp with time zone'", &oids.TimestampTz},
+	}
+
+	// fetch all the OIDs we care about
+	for _, n := range names {
+		ccmd := C.CString("SELECT " + n.kind + "::regtype::oid")
+		defer C.free(unsafe.Pointer(ccmd))
+		cres := C.PQexec(db, ccmd)
+		defer C.PQclear(cres)
+		if err := resultError(cres); err != nil {
+			return nil, err
+		}
+		sval := C.GoString(C.PQgetvalue(cres, 0, 0))
+		*n.dest, err = strconv.Atoi(sval)
+		if err != nil {
+			return nil, ErrFetchingOids
+		}
+	}
+
+	// save in cache for next time
+	d.oids[dsn] = oids
+
+	return oids, nil
 }
 
 type libpqConn struct {
 	db        *C.PGconn
+	oids      *pqoid
 	stmtCache map[string]driver.Stmt
 	stmtNum   int
 }
@@ -179,7 +247,6 @@ func (c *libpqConn) Prepare(query string) (driver.Stmt, error) {
 	cres := C.PQprepare(c.db, cname, cquery, 0, nil)
 	defer C.PQclear(cres)
 	if err := resultError(cres); err != nil {
-		C.PQclear(cres)
 		return nil, err
 	}
 
@@ -319,16 +386,10 @@ func (r *libpqRows) Next(dest []driver.Value) error {
 			continue
 		}
 
-		val := C.GoString(C.PQgetvalue(r.res, currRow, ci))
 		var err error
-		switch vtype := uint(C.PQftype(r.res, C.int(i))); vtype {
-		case C.BOOLOID:
-			if val == "t" {
-				dest[i] = "true"
-			} else {
-				dest[i] = "false"
-			}
-		case C.BYTEAOID:
+		val := C.GoString(C.PQgetvalue(r.res, currRow, ci))
+		switch vtype := int(C.PQftype(r.res, ci)); vtype {
+		case r.s.c.oids.Bytea:
 			if !strings.HasPrefix(val, `\x`) {
 				return errors.New("libpq: invalid byte string format")
 			}
@@ -336,14 +397,23 @@ func (r *libpqRows) Next(dest []driver.Value) error {
 			if err != nil {
 				return errors.New(fmt.Sprint("libpq: could not decode hex string: %s", err))
 			}
-		case C.CHAROID, C.BPCHAROID, C.VARCHAROID, C.TEXTOID,
-			C.INT2OID, C.INT4OID, C.INT8OID, C.OIDOID, C.XIDOID,
-			C.FLOAT8OID, C.FLOAT4OID,
-			C.DATEOID, C.TIMEOID, C.TIMESTAMPOID, C.TIMESTAMPTZOID, C.INTERVALOID, C.TIMETZOID,
-			C.NUMERICOID:
-			dest[i] = val
+		case r.s.c.oids.Date:
+			dest[i], err = time.Parse("2006-01-02", val)
+			if err != nil {
+				return errors.New(fmt.Sprint("libpq: could not parse DATE %s: %s", val, err))
+			}
+		case r.s.c.oids.Timestamp:
+			dest[i], err = time.Parse("2006-01-02 15:04:05", val)
+			if err != nil {
+				return errors.New(fmt.Sprint("libpq: could not parse TIMESTAMP %s: %s", val, err))
+			}
+		case r.s.c.oids.TimestampTz:
+			dest[i], err = time.Parse(timeFormat, val)
+			if err != nil {
+				return errors.New(fmt.Sprint("libpq: could not parse TIMESTAMP WITH TIME ZONE %s: %s", val, err))
+			}
 		default:
-			return errors.New(fmt.Sprintf("unsupported type oid: %d", vtype))
+			dest[i] = val
 		}
 	}
 
