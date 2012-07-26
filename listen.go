@@ -41,8 +41,8 @@ import (
 )
 
 var (
+	// Error returned when trying to call Exec() on a prepared LISTEN statement.
 	ErrListenStmtNoExec       = errors.New("libpq: Exec() not supported for LISTEN statements")
-	ErrWaitingForNotification = errors.New("libpq: Fatal error waiting for NOTIFY")
 )
 
 type libpqListenStmt struct {
@@ -50,7 +50,10 @@ type libpqListenStmt struct {
 	query string
 }
 
+// Start listening to a Postgres channel.
+// query must begin with "LISTEN" (case doesn't matter).
 func (c *libpqConn) prepareListen(query string) (driver.Stmt, error) {
+	// we can just exec the listen directly as preparation
 	if err := c.exec(query, nil); err != nil {
 		return nil, err
 	}
@@ -58,6 +61,8 @@ func (c *libpqConn) prepareListen(query string) (driver.Stmt, error) {
 	return &libpqListenStmt{c, query}, nil
 }
 
+// Querying a prepared LISTEN statement blocks until a notification is
+// received, then returns the message sent via NOTIFY (possibly "").
 func (s *libpqListenStmt) Query(args []driver.Value) (driver.Rows, error) {
 	// first check to see if we have any pending notifications already
 	note := C.PQnotifies(s.c.db)
@@ -65,7 +70,7 @@ func (s *libpqListenStmt) Query(args []driver.Value) (driver.Rows, error) {
 		// none pending - block waiting for one
 		note = C.waitForNotify(s.c.db)
 		if note == nil {
-			return nil, ErrWaitingForNotification
+			return nil, driver.ErrBadConn
 		}
 	}
 	defer C.PQfreemem(unsafe.Pointer(note))
@@ -104,8 +109,8 @@ func (r *libpqNotificationRows) Next(dest []driver.Value) error {
 		return io.EOF
 	}
 	r.reported = true
-	if len(dest) > 0 {
-		dest[0] = r.payload
-	}
+
+	// database/sql guarantees len(dest) == 1 because we return 1 column name in Columns()
+	dest[0] = r.payload
 	return nil
 }

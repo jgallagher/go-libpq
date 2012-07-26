@@ -21,18 +21,21 @@ import (
 const timeFormat = "2006-01-02 15:04:05.000000-07"
 
 var (
+	// Error returned by any call to LastInsertId().
 	ErrLastInsertId = errors.New("libpq: LastInsertId() not supported")
+
+	// Error returned by Open() if libpq is not thread-safe.
 	ErrThreadSafety = errors.New("libpq: Not compiled for thread-safe operation")
 )
 
-type libpqDriver struct {
-}
+type libpqDriver struct{}
 
 func init() {
 	go handleArgpool()
 	sql.Register("libpq", &libpqDriver{})
 }
 
+// dsn is passed directly to PQconnectdb
 func (d *libpqDriver) Open(dsn string) (driver.Conn, error) {
 	if C.PQisthreadsafe() != 1 {
 		return nil, ErrThreadSafety
@@ -47,11 +50,7 @@ func (d *libpqDriver) Open(dsn string) (driver.Conn, error) {
 		return nil, errors.New("libpq: connection error " + C.GoString(C.PQerrorMessage(db)))
 	}
 
-	return &libpqConn{
-		db,
-		make(map[string]driver.Stmt),
-		0,
-	}, nil
+	return &libpqConn{db, make(map[string]driver.Stmt), 0}, nil
 }
 
 type libpqConn struct {
@@ -90,6 +89,8 @@ func (c *libpqConn) Close() error {
 	return nil
 }
 
+// Execute a query, possibly getting the number of rows. res may be nil if
+// the caller doesn't care about that (e.g., Begin(), Commit(), Rollback()).
 func (c *libpqConn) exec(cmd string, res *libpqResult) error {
 	ccmd := C.CString(cmd)
 	defer C.free(unsafe.Pointer(ccmd))
@@ -113,6 +114,7 @@ func (c *libpqConn) exec(cmd string, res *libpqResult) error {
 	return nil
 }
 
+// Execute a query with 1 or more parameters.
 func (c *libpqConn) execParams(cmd string, args []driver.Value) (driver.Result, error) {
 	// convert args into C array-of-strings
 	cargs, err := buildCArgs(args)
@@ -140,6 +142,7 @@ func (c *libpqConn) execParams(cmd string, args []driver.Value) (driver.Result, 
 	return libpqResult(nrows), nil
 }
 
+// Implement Execer interface.
 func (c *libpqConn) Exec(query string, args []driver.Value) (driver.Result, error) {
 	if len(args) != 0 {
 		return c.execParams(query, args)
@@ -165,7 +168,8 @@ func (c *libpqConn) Prepare(query string) (driver.Stmt, error) {
 	}
 
 	// create unique statement name
-	// NOTE: do NOT free cname here because it is cached; free it in c.Close()
+	// NOTE: do NOT free cname here because it is cached in c.stmtCache;
+	//       all cached statement names are freed in c.Close()
 	cname := C.CString(strconv.Itoa(c.stmtNum))
 	c.stmtNum++
 	cquery := C.CString(query)
@@ -187,7 +191,7 @@ func (c *libpqConn) Prepare(query string) (driver.Stmt, error) {
 	}
 	nparams := int(C.PQnparams(cinfo))
 
-	// save in cache
+	// save statement in cache
 	c.stmtCache[query] = &libpqStmt{c: c, name: cname, nparams: nparams}
 
 	return c.stmtCache[query], nil

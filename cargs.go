@@ -28,11 +28,13 @@ import (
 	"time"
 )
 
+// wrapper for a request for a char** of length nargs
 type pqPoolRequest struct {
 	nargs int
 	resp  chan (**C.char)
 }
 
+// return a char** of length nargs to the pool
 type pqPoolReturn struct {
 	nargs int
 	array **C.char
@@ -44,6 +46,7 @@ var (
 	poolReturn  chan pqPoolReturn
 )
 
+// convert database/sql/driver arguments into libpq-style char**
 func buildCArgs(args []driver.Value) (**C.char, error) {
 	carray := getCharArrayFromPool(len(args))
 
@@ -91,6 +94,8 @@ func returnCharArrayToPool(nargs int, array **C.char) {
 	poolReturn <- pqPoolReturn{nargs, array}
 }
 
+// this is started in a goroutine in libpq's init() to reduce the number
+// of calls to makeCharArray()
 func handleArgpool() {
 	argpool = make(map[int][]**C.char)
 	poolRequest = make(chan pqPoolRequest)
