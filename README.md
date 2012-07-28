@@ -23,9 +23,25 @@ moment.
 
 ## Use
 
-TODO: Example
+```go
+package main
+
+import (
+	_ "github.com/jgallagher/go-libpq"
+	"database/sql"
+)
+
+func main() {
+	db, err := sql.Open("libpq", "user=USERNAME dbname=gosqltest sslmode=disable")
+	// ...
+}
+```
 
 **Connection String Parameters **
+
+The connection string passed to Open() is passed through with no changes
+to the [PQconnectdb](http://www.postgresql.org/docs/9.1/static/libpq-connect.html)
+function from Postgres; see their documentation for supported parameters.
 
 ## LISTEN/NOTIFY Support
 
@@ -33,7 +49,8 @@ There is no explicit support for NOTIFY; simply calling `Exec("NOTIFY channel,
 message")` is sufficient. LISTEN is a different beast. This driver allows for
 support for LISTEN completely within the database/sql API, but some care must
 be taken to avoid undetectable (by the go runtime) deadlock. Specifically,
-to start listening on a channel, issue a Query against an open database:
+to start listening on a channel, issue a LISTEN Query(), and then call
+Next()/Scan() on the returned sql.Rows to wait for notifications:
 
 	// assuming "db" was returned from sql.Open(...)
 	notifications, err := db.Query("LISTEN mychan")
@@ -58,5 +75,10 @@ that relays notifications back on a channel. For a full example, see
 
 ## Testing
 
-Describe how to test.
-Add to go-sql-test?
+To run the tests, just run `go test -v`. A test database must be set up;
+it uses exactly the same database configuration as https://github.com/bradfitz/go-sql-test/.
+Create the database `gosqltest`, and give yourself ($USER) privileges with
+the password `gosqltest`.
+
+This driver passes all tests in the go-sql-test repostitory, but has not yet
+been submitted for inclusion with the other drivers.

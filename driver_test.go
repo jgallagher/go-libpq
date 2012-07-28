@@ -15,7 +15,7 @@ func getConn(t *testing.T) *sql.DB {
 		user = os.Getenv("USER")
 	}
 	dbName := "gosqltest"
-	db, err := sql.Open("libpq", fmt.Sprintf("user=%s password=foo dbname=%s sslmode=disable", user, dbName))
+	db, err := sql.Open("libpq", fmt.Sprintf("user=%s password=gosqltest dbname=%s sslmode=disable", user, dbName))
 	if err != nil {
 		t.Fatalf("Failed to open database: ", err)
 	}
