@@ -128,7 +128,7 @@ type libpqConn struct {
 }
 
 func (c *libpqConn) Begin() (driver.Tx, error) {
-	if err := c.exec("BEGIN", nil); err != nil {
+	if _, err := c.exec("BEGIN", false); err != nil {
 		return nil, err
 	}
 	return &libpqTx{c}, nil
@@ -139,11 +139,13 @@ type libpqTx struct {
 }
 
 func (tx *libpqTx) Commit() error {
-	return tx.c.exec("COMMIT", nil)
+	_, err := tx.c.exec("COMMIT", false)
+	return err
 }
 
 func (tx *libpqTx) Rollback() error {
-	return tx.c.exec("ROLLBACK", nil)
+	_, err := tx.c.exec("ROLLBACK", false)
+	return err
 }
 
 func (c *libpqConn) Close() error {
@@ -157,29 +159,29 @@ func (c *libpqConn) Close() error {
 	return nil
 }
 
-// Execute a query, possibly getting the number of rows. res may be nil if
+// Execute a query, possibly getting a result object (unless the caller doesn't
+// want it, as in the case of BEGIN/COMMIT/ROLLBACK).
 // the caller doesn't care about that (e.g., Begin(), Commit(), Rollback()).
-func (c *libpqConn) exec(cmd string, res *libpqResult) error {
+//func (c *libpqConn) exec(cmd string, res *libpqResult) error {
+func (c *libpqConn) exec(cmd string, wantResult bool) (driver.Result, error) {
 	ccmd := C.CString(cmd)
 	defer C.free(unsafe.Pointer(ccmd))
 	cres := C.PQexec(c.db, ccmd)
 	defer C.PQclear(cres)
 	if err := resultError(cres); err != nil {
-		return err
+		return nil, err
 	}
 
-	// check to see if caller cares about number of rows modified
-	if res == nil {
-		return nil
+	if !wantResult {
+		return nil, nil
 	}
 
 	nrows, err := getNumRows(cres)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	*res = libpqResult(nrows)
-	return nil
+	return libpqResult(nrows), nil
 }
 
 // Execute a query with 1 or more parameters.
@@ -216,11 +218,7 @@ func (c *libpqConn) Exec(query string, args []driver.Value) (driver.Result, erro
 		return c.execParams(query, args)
 	}
 
-	var res libpqResult
-	if err := c.exec(query, &res); err != nil {
-		return nil, err
-	}
-	return &res, nil
+	return c.exec(query, true)
 }
 
 func (c *libpqConn) Prepare(query string) (driver.Stmt, error) {
@@ -228,11 +226,6 @@ func (c *libpqConn) Prepare(query string) (driver.Stmt, error) {
 	cached, ok := c.stmtCache[query]
 	if ok {
 		return cached, nil
-	}
-
-	// check to see if this is a LISTEN
-	if strings.HasPrefix(strings.ToLower(query), "listen") {
-		return c.prepareListen(query)
 	}
 
 	// create unique statement name
@@ -259,9 +252,9 @@ func (c *libpqConn) Prepare(query string) (driver.Stmt, error) {
 	nparams := int(C.PQnparams(cinfo))
 
 	// save statement in cache
-	c.stmtCache[query] = &libpqStmt{c: c, name: cname, nparams: nparams}
-
-	return c.stmtCache[query], nil
+	stmt := &libpqStmt{c: c, name: cname, nparams: nparams}
+	c.stmtCache[query] = stmt
+	return stmt, nil
 }
 
 type libpqStmt struct {
@@ -319,6 +312,12 @@ func (s *libpqStmt) Query(args []driver.Value) (driver.Rows, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// check to see if this was a "LISTEN"
+	if C.GoString(C.PQcmdStatus(cres)) == "LISTEN" {
+		return &libpqListenRows{s.c}, nil
+	}
+
 	return &libpqRows{
 		s:       s,
 		res:     cres,

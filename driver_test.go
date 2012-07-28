@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-func getConn(t *testing.T) (*sql.DB, error) {
+func getConn(t *testing.T) *sql.DB {
 	user := os.Getenv("GOSQLTEST_PQ_USER")
 	if user == "" {
 		user = os.Getenv("USER")
@@ -19,13 +19,14 @@ func getConn(t *testing.T) (*sql.DB, error) {
 	if err != nil {
 		t.Fatalf("Failed to open database: ", err)
 	}
-	return db, nil
+	return db
 }
 
 func TestBool(t *testing.T) {
-	db, err := getConn(t)
+	db := getConn(t)
+	defer db.Close()
 	val := false
-	err = db.QueryRow("select true").Scan(&val)
+	err := db.QueryRow("select true").Scan(&val)
 	if err != nil || val != true {
 		t.Fatalf("Failed to Scan() a bool: ", err)
 	}
@@ -36,29 +37,32 @@ func TestBool(t *testing.T) {
 }
 
 func TestInt(t *testing.T) {
-	db, err := getConn(t)
+	db := getConn(t)
+	defer db.Close()
 	val := int64(0)
 	expect := int64(1099511627776)
-	err = db.QueryRow("select 1099511627776").Scan(&val)
+	err := db.QueryRow("select 1099511627776").Scan(&val)
 	if err != nil || val != expect {
 		t.Fatalf("Failed to Scan() an int64: ", err)
 	}
 }
 
 func TestFloat(t *testing.T) {
-	db, err := getConn(t)
+	db := getConn(t)
+	defer db.Close()
 	val := float64(0)
 	expect := float64(1.25)
-	err = db.QueryRow("select 1.25").Scan(&val)
+	err := db.QueryRow("select 1.25").Scan(&val)
 	if err != nil || val != expect {
 		t.Fatalf("Failed to Scan() a float64: ", err)
 	}
 }
 
 func TestByteArray(t *testing.T) {
-	db, err := getConn(t)
+	db := getConn(t)
+	defer db.Close()
 	var val []byte
-	err = db.QueryRow("select E'\\\\x01020304'::bytea").Scan(&val)
+	err := db.QueryRow("select E'\\\\x01020304'::bytea").Scan(&val)
 	if err != nil {
 		t.Fatalf("Failed to Scan() a []byte: ", err)
 	}
@@ -73,20 +77,22 @@ func TestByteArray(t *testing.T) {
 }
 
 func TestString(t *testing.T) {
-	db, err := getConn(t)
+	db := getConn(t)
+	defer db.Close()
 	val := ""
 	expect := "a string"
-	err = db.QueryRow("select 'a string'").Scan(&val)
+	err := db.QueryRow("select 'a string'").Scan(&val)
 	if err != nil || val != expect {
 		t.Fatalf("Failed to Scan() a string: ", err)
 	}
 }
 
 func TestTime(t *testing.T) {
-	db, err := getConn(t)
+	db := getConn(t)
+	defer db.Close()
 	val := time.Now()
 	expect := time.Date(1999, time.January, 8, 0, 0, 0, 0, time.UTC)
-	err = db.QueryRow("select date '1999-Jan-08'").Scan(&val)
+	err := db.QueryRow("select date '1999-Jan-08'").Scan(&val)
 	if err != nil || val != expect {
 		t.Fatalf("Failed to Scan() a DATE: ", err)
 	}
@@ -105,10 +111,11 @@ func TestTime(t *testing.T) {
 }
 
 func TestNull(t *testing.T) {
-	db, err := getConn(t)
+	db := getConn(t)
+	defer db.Close()
 	val := new(string)
 	*val = "a string"
-	err = db.QueryRow("select NULL").Scan(&val)
+	err := db.QueryRow("select NULL").Scan(&val)
 	if err != nil || val != nil {
 		t.Fatalf("Failed to Scan() NULL: ", err)
 	}

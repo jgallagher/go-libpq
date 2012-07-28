@@ -35,82 +35,34 @@ static PGnotify *waitForNotify(PGconn *conn) {
 import "C"
 import (
 	"database/sql/driver"
-	"errors"
-	"io"
 	"unsafe"
 )
 
-var (
-	// Error returned when trying to call Exec() on a prepared LISTEN statement.
-	ErrListenStmtNoExec       = errors.New("libpq: Exec() not supported for LISTEN statements")
-)
-
-type libpqListenStmt struct {
-	c     *libpqConn
-	query string
+type libpqListenRows struct {
+	c *libpqConn
 }
 
-// Start listening to a Postgres channel.
-// query must begin with "LISTEN" (case doesn't matter).
-func (c *libpqConn) prepareListen(query string) (driver.Stmt, error) {
-	// we can just exec the listen directly as preparation
-	if err := c.exec(query, nil); err != nil {
-		return nil, err
-	}
-
-	return &libpqListenStmt{c, query}, nil
+func (r *libpqListenRows) Close() error {
+	// we're the exclusive owners of this libpqConn, so it's safe to unlisten *
+	_, err := r.c.exec("UNLISTEN *", false)
+	return err
 }
 
-// Querying a prepared LISTEN statement blocks until a notification is
-// received, then returns the message sent via NOTIFY (possibly "").
-func (s *libpqListenStmt) Query(args []driver.Value) (driver.Rows, error) {
-	// first check to see if we have any pending notifications already
-	note := C.PQnotifies(s.c.db)
+func (r *libpqListenRows) Columns() []string {
+	return []string{"NOTIFICATION"}
+}
+
+func (r *libpqListenRows) Next(dest []driver.Value) error {
+	// see if we already have pending notifications
+	note := C.PQnotifies(r.c.db)
 	if note == nil {
 		// none pending - block waiting for one
-		note = C.waitForNotify(s.c.db)
+		note = C.waitForNotify(r.c.db)
 		if note == nil {
-			return nil, driver.ErrBadConn
+			return driver.ErrBadConn
 		}
 	}
 	defer C.PQfreemem(unsafe.Pointer(note))
-	return &libpqNotificationRows{C.GoString(note.extra), false}, nil
-}
-
-func (s *libpqListenStmt) Close() error {
-	// issue unlisten - assumes s.query starts with "listen", which is true
-	// given the check in libpqConn.Prepare()
-	return s.c.exec("un"+s.query, nil)
-}
-
-func (s *libpqListenStmt) Exec(args []driver.Value) (driver.Result, error) {
-	return nil, ErrListenStmtNoExec
-}
-
-func (s *libpqListenStmt) NumInput() int {
-	return 0
-}
-
-type libpqNotificationRows struct {
-	payload  string
-	reported bool
-}
-
-func (r *libpqNotificationRows) Close() error {
-	return nil
-}
-
-func (r *libpqNotificationRows) Columns() []string {
-	return []string{"NOTIFY payload"}
-}
-
-func (r *libpqNotificationRows) Next(dest []driver.Value) error {
-	if r.reported {
-		return io.EOF
-	}
-	r.reported = true
-
-	// database/sql guarantees len(dest) == 1 because we return 1 column name in Columns()
-	dest[0] = r.payload
+	dest[0] = C.GoString(note.extra)
 	return nil
 }
