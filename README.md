@@ -6,11 +6,11 @@ If your Postgres headers and libraries are installed in what appears to be
 the typical places:
 
 	/usr/include/libpq-fe.h
-	/usr/include/postgresql/server/postgres_fe.h
-	/usr/include/postgresql/server/catalog/pg_type.h
+	/usr/lib/libpq.so     # on Linux
+	/usr/lib/libpq.dynlib # on Mac os X
 
-or you're on Mac OS X and installed [Postgres.app](http://postgresapp.com/) in
-/Applications, then
+or you're on Mac OS X and have installed [Postgres.app](http://postgresapp.com/)
+in /Applications, then
 
 	go get github.com/jgallagher/go-libpq
 
@@ -37,8 +37,6 @@ func main() {
 }
 ```
 
-**Connection String Parameters **
-
 The connection string passed to Open() is passed through with no changes
 to the [PQconnectdb](http://www.postgresql.org/docs/9.1/static/libpq-connect.html)
 function from Postgres; see their documentation for supported parameters.
@@ -52,22 +50,24 @@ be taken to avoid undetectable (by the go runtime) deadlock. Specifically,
 to start listening on a channel, issue a LISTEN Query(), and then call
 Next()/Scan() on the returned sql.Rows to wait for notifications:
 
-	// assuming "db" was returned from sql.Open(...)
-	notifications, err := db.Query("LISTEN mychan")
-	if err != nil {
-		// handle "couldn't start listening"
-	}
+```go
+// assuming "db" was returned from sql.Open(...)
+notifications, err := db.Query("LISTEN mychan")
+if err != nil {
+	// handle "couldn't start listening"
+}
 
-	// wait for a notification to arrive on channel "mychan"
-	// WARNING: This call will BLOCK until a notification arrives!
-	if !notifications.Next() {
-		// this will never happen unless there is a failure with the underlying
-		// database connection
-	}
+// wait for a notification to arrive on channel "mychan"
+// WARNING: This call will BLOCK until a notification arrives!
+if !notifications.Next() {
+	// this will never happen unless there is a failure with the underlying
+	// database connection
+}
 
-	// get the message sent on the channel (possibly "")
-	var message string
-	notifications.Scan(&message)
+// get the message sent on the channel (possibly "")
+var message string
+notifications.Scan(&message)
+```
 
 It's almost certain that the actual use for this will be inside a goroutine
 that relays notifications back on a channel. For a full example, see
@@ -80,5 +80,5 @@ it uses exactly the same database configuration as https://github.com/bradfitz/g
 Create the database `gosqltest`, and give yourself ($USER) privileges with
 the password `gosqltest`.
 
-This driver passes all tests in the go-sql-test repostitory, but has not yet
-been submitted for inclusion with the other drivers.
+This driver passes everything in go-sql-test, but has not yet been submitted
+for inclusion in that repository.
