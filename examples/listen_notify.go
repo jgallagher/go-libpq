@@ -63,6 +63,4 @@ func main() {
 	for i := 0; i < 10; i++ {
 		fmt.Printf("received notification %s\n", <-messages)
 	}
-
-	db.Close()
 }
