@@ -14,12 +14,12 @@ in /Applications, then
 
 	go get github.com/jgallagher/go-libpq
 
-should work. If you have build problems, you will need to modify pgdriver.go to
-point to the correct locations. (Please let me know if there's a way I could
-make this smoother; [this
+should work. If you have build problems, you will need to modify pgconfig.go to
+point to the correct locations. See that file for instructions. (Please let me
+know if there's a way I could make this smoother; [this
 discussion](https://groups.google.com/forum/#!msg/golang-nuts/ABK6gcHbBjc/eGlxjrmXzfoJ)
 seems to imply that there isn't much support for this sort of thing at the
-moment.
+moment.)
 
 ## Use
 
