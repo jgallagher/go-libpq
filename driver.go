@@ -319,6 +319,7 @@ func (s *libpqStmt) Query(args []driver.Value) (driver.Rows, error) {
 
 	// check to see if this was a "LISTEN"
 	if C.GoString(C.PQcmdStatus(cres)) == "LISTEN" {
+		C.PQclear(cres)
 		return &libpqListenRows{s.c}, nil
 	}
 
