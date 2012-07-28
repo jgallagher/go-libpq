@@ -106,7 +106,19 @@ func TestTime(t *testing.T) {
 	expect = time.Date(1999, time.January, 8, 16, 5, 1, 0, time.Local)
 	err = db.QueryRow("select timestamp with time zone '1999-Jan-08 04:05:01 PM'").Scan(&val)
 	if err != nil || val != expect {
-		t.Fatalf("Failed to Scan() a TIMESTAMP: ", err, expect, val)
+		t.Fatalf("Failed to Scan() a TIMESTAMP WITH TIME ZONE: ", err, expect, val)
+	}
+
+	expect = time.Date(0, time.January, 1, 16, 5, 1, 0, time.UTC)
+	err = db.QueryRow("select time '16:05:01'").Scan(&val)
+	if err != nil || val != expect {
+		t.Fatalf("Failed to Scan() a TIME: ", err)
+	}
+
+	expect = time.Date(0, time.January, 1, 16, 5, 1, 0, time.Local)
+	err = db.QueryRow("select time with time zone '16:05:01'").Scan(&val)
+	if err != nil || val != expect {
+		t.Fatalf("Failed to Scan() a TIME: ", err)
 	}
 }
 

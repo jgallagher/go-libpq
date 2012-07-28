@@ -35,6 +35,8 @@ type pqoid struct {
 	Date        int
 	Timestamp   int
 	TimestampTz int
+	Time        int
+	TimeTz      int
 }
 
 type libpqDriver struct {
@@ -96,6 +98,8 @@ func (d *libpqDriver) getOids(db *C.PGconn, dsn string) (*pqoid, error) {
 		{"'date'", &oids.Date},
 		{"'timestamp'", &oids.Timestamp},
 		{"'timestamp with time zone'", &oids.TimestampTz},
+		{"'time'", &oids.Time},
+		{"'time with time zone'", &oids.TimeTz},
 	}
 
 	// fetch all the OIDs we care about
@@ -410,6 +414,16 @@ func (r *libpqRows) Next(dest []driver.Value) error {
 			dest[i], err = time.Parse(timeFormat, val)
 			if err != nil {
 				return errors.New(fmt.Sprint("libpq: could not parse TIMESTAMP WITH TIME ZONE %s: %s", val, err))
+			}
+		case r.s.c.oids.Time:
+			dest[i], err = time.Parse("15:04:05", val)
+			if err != nil {
+				return errors.New(fmt.Sprint("libpq: could not parse TIME %s: %s", val, err))
+			}
+		case r.s.c.oids.TimeTz:
+			dest[i], err = time.Parse("15:04:05-07", val)
+			if err != nil {
+				return errors.New(fmt.Sprint("libpq: could not parse TIME WITH TIME ZONE %s: %s", val, err))
 			}
 		default:
 			dest[i] = val
