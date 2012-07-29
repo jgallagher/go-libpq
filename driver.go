@@ -256,7 +256,7 @@ func (c *libpqConn) Prepare(query string) (driver.Stmt, error) {
 	nparams := int(C.PQnparams(cinfo))
 
 	// save statement in cache
-	stmt := &libpqStmt{c: c, name: cname, nparams: nparams}
+	stmt := &libpqStmt{c: c, name: cname, query: query, nparams: nparams}
 	c.stmtCache[query] = stmt
 	return stmt, nil
 }
@@ -264,12 +264,15 @@ func (c *libpqConn) Prepare(query string) (driver.Stmt, error) {
 type libpqStmt struct {
 	c       *libpqConn
 	name    *C.char
+	query   string
+	cquery  *C.char
 	nparams int
 }
 
 func (s *libpqStmt) Close() error {
-	// nothing to do - prepared statement names are cached and will be
-	// freed in s.c.Close()
+	if s.cquery != nil {
+		C.free(unsafe.Pointer(s.cquery))
+	}
 	return nil
 }
 
@@ -278,6 +281,19 @@ func (s *libpqStmt) NumInput() int {
 }
 
 func (s *libpqStmt) exec(args []driver.Value) (*C.PGresult, error) {
+	// if we have no arguments, use plain exec instead of more complicated PQexecPrepared
+	if len(args) == 0 {
+		if s.cquery == nil {
+			s.cquery = C.CString(s.query)
+		}
+		cres := C.PQexec(s.c.db, s.cquery)
+		if err := resultError(cres); err != nil {
+			C.PQclear(cres)
+			return nil, err
+		}
+		return cres, nil
+	}
+
 	// convert args into C array-of-strings
 	cargs, err := buildCArgs(args)
 	if err != nil {
