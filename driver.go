@@ -429,7 +429,17 @@ func (r *libpqRows) Next(dest []driver.Value) error {
 				return errors.New(fmt.Sprint("libpq: could not parse TIMESTAMP %s: %s", val, err))
 			}
 		case r.s.c.oids.TimestampTz:
-			dest[i], err = time.Parse(timeFormat, val)
+			for _, timeFormat := range []string {
+				"2006-01-02 15:04:05-07",
+				"2006-01-02 15:04:05.000000-07",
+				"2006-01-02 15:04:05-07:00",
+				"2006-01-02 15:04:05.000000-07:00",
+			} {
+				dest[i], err = time.Parse(timeFormat, val)
+				if err == nil {
+					break
+				}
+			}
 			if err != nil {
 				return errors.New(fmt.Sprint("libpq: could not parse TIMESTAMP WITH TIME ZONE %s: %s", val, err))
 			}

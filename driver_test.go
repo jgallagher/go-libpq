@@ -106,19 +106,13 @@ func TestTime(t *testing.T) {
 	expect = time.Date(1999, time.January, 8, 16, 5, 1, 0, time.Local)
 	err = db.QueryRow("select timestamp with time zone '1999-Jan-08 04:05:01 PM'").Scan(&val)
 	if err != nil || val != expect {
-		t.Fatalf("Failed to Scan() a TIMESTAMP WITH TIME ZONE: ", err, expect, val)
+		t.Fatalf("Failed to Scan() a TIMESTAMP WITH TIME ZONE: err=%s, expect=%s, got=%s", err, expect, val)
 	}
 
 	expect = time.Date(0, time.January, 1, 16, 5, 1, 0, time.UTC)
 	err = db.QueryRow("select time '16:05:01'").Scan(&val)
 	if err != nil || val != expect {
-		t.Fatalf("Failed to Scan() a TIME: ", err)
-	}
-
-	expect = time.Date(0, time.January, 1, 16, 5, 1, 0, time.Local)
-	err = db.QueryRow("select time with time zone '16:05:01'").Scan(&val)
-	if err != nil || val != expect {
-		t.Fatalf("Failed to Scan() a TIME: ", err)
+		t.Fatalf("Failed to Scan() a TIME: err=%s, expect=%s, got=%s", err, expect, val)
 	}
 }
 
@@ -130,5 +124,55 @@ func TestNull(t *testing.T) {
 	err := db.QueryRow("select NULL").Scan(&val)
 	if err != nil || val != nil {
 		t.Fatalf("Failed to Scan() NULL: ", err)
+	}
+}
+
+func TestTimestampWithTimeZone(t *testing.T) {
+	db := getConn(t)
+	defer db.Close()
+
+	_, err := db.Exec("create temp table test (t timestamp with time zone)")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// try several different locations, all included in Go's zoneinfo.zip
+	for _, locName := range []string{
+		"UTC",
+		"America/Chicago",
+		"America/New_York",
+		"Australia/Darwin",
+		"Australia/Perth",
+	} {
+		loc, err := time.LoadLocation(locName)
+		if err != nil {
+			t.Logf("Could not load time zone %s - skipping", locName)
+			continue
+		}
+
+		// Postgres timestamps have a resolution of 1 microsecond, so don't
+		// use the full range of the Nanosecond argument
+		refTime := time.Date(2012, 11, 6, 10, 23, 42, 123456000, loc)
+		_, err = db.Exec("insert into test(t) values($1)", refTime)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		var gotTime time.Time
+		row := db.QueryRow("select t from test")
+		err = row.Scan(&gotTime)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Postgres timestamps have a resolution of 1 microsecond
+		if !refTime.Equal(gotTime) {
+			t.Errorf("timestamps not equal: %s != %s", refTime, gotTime)
+		}
+
+		_, err = db.Exec("delete from test")
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 }
