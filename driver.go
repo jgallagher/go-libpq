@@ -272,6 +272,7 @@ type libpqStmt struct {
 func (s *libpqStmt) Close() error {
 	if s.cquery != nil {
 		C.free(unsafe.Pointer(s.cquery))
+		s.cquery = nil
 	}
 	return nil
 }
