@@ -8,14 +8,14 @@ extern void go_callback_log(char * message);
 
 static void notice(void * arg, char * message)
 {
-    go_callback_log(message);
+	go_callback_log(message);
 }
 
 static void setNotice(PGconn *conn)
 {
-    // we need that cast to suppress issue with const qualifier
-    // that is not supported by cgo
-    PQsetNoticeProcessor(conn, (PQnoticeProcessor)notice,NULL);
+	// we need that cast to suppress issue with const qualifier
+	// that is not supported by cgo
+	PQsetNoticeProcessor(conn, (PQnoticeProcessor)notice,NULL);
 }
 
 */
@@ -31,6 +31,8 @@ type Logger func(message string)
 
 var logger Logger
 
+// SetLogger redirects notifications for all new connections
+// to a callback
 func SetLogger(l Logger) {
 	if l == nil {
 		panic("can't set empty logger")
