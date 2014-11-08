@@ -70,6 +70,8 @@ func (d *libpqDriver) Open(dsn string) (driver.Conn, error) {
 		return nil, ErrFetchingOids
 	}
 
+	redirectOutput(db)
+
 	return &libpqConn{
 		db:        db,
 		oids:      oids,
@@ -429,7 +431,7 @@ func (r *libpqRows) Next(dest []driver.Value) error {
 				return errors.New(fmt.Sprint("libpq: could not parse TIMESTAMP %s: %s", val, err))
 			}
 		case r.s.c.oids.TimestampTz:
-			for _, timeFormat := range []string {
+			for _, timeFormat := range []string{
 				"2006-01-02 15:04:05-07",
 				"2006-01-02 15:04:05.000000-07",
 				"2006-01-02 15:04:05-07:00",
